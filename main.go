@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -18,37 +19,80 @@ import (
 	"github.com/pion/webrtc/v2"
 )
 
-// var (
-// 	router = mux.NewRouter()
-// )
-
 const (
 	rtcpPLIInterval = time.Second * 3
 	compress        = false
 )
 
+type SdpStruct struct {
+	User string `json:"user"`
+	SDP  string `json:"sdp"`
+}
+
+func Save(answer string) {
+	d1 := []byte(answer)
+
+	err := ioutil.WriteFile("answerfile", d1, 0700)
+	if err != nil {
+		panic(err)
+	}
+}
+
 func HTTPSDPServer() chan string {
-	port := flag.Int("port", 8006, "hypertexto transfero 🅱️rotocol server 🅱️ort")
+	port := flag.Int("port", 8004, "hypertexto transfero 🅱️rotocol server 🅱️ort")
 	flag.Parse()
 	sdpChan := make(chan string)
+	//userChan := make(chan string)
 	http.HandleFunc("/api/sdp", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := ioutil.ReadAll(r.Body)
+		if r.Method == http.MethodPost {
 
-		log.Println("Checking format, because this will get fucked once curl is abandoned")
-		log.Println(body)
+			//body, _ := ioutil.ReadAll(r.Body)
+			requestBody, err := ioutil.ReadAll(r.Body)
+			if err != nil {
+				log.Fatal("fuck")
+			}
+			defer r.Body.Close()
 
-		fmt.Fprint(w, "done")
-		sdpChan <- string(body)
+			var itemRequest SdpStruct
+			if err := json.Unmarshal(requestBody, &itemRequest); err != nil {
+				log.Fatal("foock")
+			}
+
+			//userChan = itemRequest.User
+
+			sdpChan <- string(itemRequest.SDP)
+
+			fmt.Fprint(w, "OK")
+		}
+	})
+	http.HandleFunc("/api/answer", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			answer, err := ioutil.ReadFile("answerfile")
+			if err != nil {
+				log.Fatal("fuck")
+			}
+			fmt.Fprint(w, string(answer))
+
+			os.Remove("answerfile")
+		}
 	})
 
 	go func() {
+		log.Println("LISTENING & SERVING ON PORT::" + strconv.Itoa(*port))
 		err := http.ListenAndServe(":"+strconv.Itoa(*port), nil)
 		if err != nil {
 			panic(err)
 		}
 	}()
-	return sdpChan
+
+	return sdpChan //, userChan
 }
+
+// func ReallyFuckedUpShit(nigga string) {
+// 	http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		json.NewEncoder(w).Encode(nigga)
+// 	}
+// }
 
 func DecodeBase64(in string, obj interface{}) {
 	b, err := base64.StdEncoding.DecodeString(in)
@@ -90,24 +134,44 @@ func EncodeBase64(obj interface{}) string {
 }
 
 func main() {
-	log.Println("1")
+	// r := chi.NewRouter()
+
+	// sdpChan := make(chan string)
+	// userChan := make(chan string)
+
+	// r.Post("/api/sdp", func(w http.ResponseWriter, r *http.Request) {
+	// 	log.Println("foo")
+	// 	requestBody, err := ioutil.ReadAll(r.Body)
+	// 	if err != nil {
+	// 		log.Fatal("fuck")
+	// 	}
+	// 	defer r.Body.Close()
+
+	// 	var itemRequest SdpStruct
+	// 	if err := json.Unmarshal(requestBody, &itemRequest); err != nil {
+	// 		log.Fatal("fuck")
+	// 	}
+
+	// 	userChan <- string(itemRequest.User)
+	// 	sdpChan <- string(itemRequest.SDP)
+
+	// 	log.Println("this won't be seen :(")
+
+	// })
+
+	// go func() {
+	// 	log.Println("LISTENING & SERVING ON PORT::8006")
+	// 	if err := http.ListenAndServe(":8006", r); err != nil {
+	// 		panic(err)
+	// 	}
+	// }()
 
 	sdpChan := HTTPSDPServer()
 
-	log.Println("2")
-
 	offer := webrtc.SessionDescription{}
 
-	log.Println("FUCK")
-	fmt.Println("FUCK")
-
 	DecodeBase64(<-sdpChan, &offer)
-
-	log.Println("It stop right before this")
-
-	fmt.Println("")
-	fmt.Println("Decode called")
-	fmt.Println("")
+	fmt.Println("line")
 
 	mediaEngine := webrtc.MediaEngine{}
 	err := mediaEngine.PopulateFromSDP(offer)
@@ -124,8 +188,6 @@ func main() {
 			},
 		},
 	}
-
-	log.Println("4")
 
 	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
 	if err != nil {
@@ -165,8 +227,6 @@ func main() {
 		}
 	})
 
-	log.Println("n")
-
 	err = peerConnection.SetRemoteDescription(offer)
 	if err != nil {
 		panic(err)
@@ -182,13 +242,19 @@ func main() {
 		panic(err)
 	}
 
-	log.Println("FUCK")
-	fmt.Println("FUCK")
+	//fmt.Println(EncodeBase64(answer))
 
-	fmt.Println(EncodeBase64(answer))
+	//Broadcast sender
+
+	//encodedans := EncodeBase64(answer)
+
+	Save(EncodeBase64(answer))
 
 	localTrack := <-localTrackChan
 	for {
+		fmt.Println("line")
+		fmt.Println("Curl an base64 SDP to start sendonly peer connection")
+
 		recvOnlyOffer := webrtc.SessionDescription{}
 		DecodeBase64(<-sdpChan, &recvOnlyOffer)
 
@@ -217,8 +283,6 @@ func main() {
 			panic(err)
 		}
 
-		fmt.Println(EncodeBase64(answer))
+		Save(EncodeBase64(answer))
 	}
-
-	log.Println("foo")
 }
