@@ -1,288 +1,120 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
-	"encoding/base64"
-	"encoding/json"
-	"flag"
-	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
-	"strconv"
-	"time"
+	"sync"
 
-	"github.com/pion/rtcp"
-	"github.com/pion/webrtc/v2"
+	"github.com/go-chi/chi"
+	"github.com/go-chi/cors"
+
+	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/web"
 )
 
-const (
-	rtcpPLIInterval = time.Second * 3
-	compress        = false
-)
-
-type SdpStruct struct {
-	User string `json:"user"`
-	SDP  string `json:"sdp"`
+type InstanceWrapper struct {
+	Servers     map[string]*web.WebInterface //changed int to string, key is
+	ServersLock *sync.Mutex
 }
 
-func Save(answer string) {
-	d1 := []byte(answer)
-
-	err := ioutil.WriteFile("answerfile", d1, 0700)
-	if err != nil {
-		panic(err)
-	}
+type ServerConfig struct {
+	Webpath  string `json:"webpath"`
+	Channels []ServerChConfig
 }
 
-func HTTPSDPServer() chan string {
-	port := flag.Int("port", 8004, "hypertexto transfero 🅱️rotocol server 🅱️ort")
-	flag.Parse()
-	sdpChan := make(chan string)
-	//userChan := make(chan string)
-	http.HandleFunc("/api/sdp", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-
-			//body, _ := ioutil.ReadAll(r.Body)
-			requestBody, err := ioutil.ReadAll(r.Body)
-			if err != nil {
-				log.Fatal("fuck")
-			}
-			defer r.Body.Close()
-
-			var itemRequest SdpStruct
-			if err := json.Unmarshal(requestBody, &itemRequest); err != nil {
-				log.Fatal("foock")
-			}
-
-			//userChan = itemRequest.User
-
-			sdpChan <- string(itemRequest.SDP)
-
-			fmt.Fprint(w, "OK")
-		}
-	})
-	http.HandleFunc("/api/answer", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			answer, err := ioutil.ReadFile("answerfile")
-			if err != nil {
-				log.Fatal("fuck")
-			}
-			fmt.Fprint(w, string(answer))
-
-			os.Remove("answerfile")
-		}
-	})
-
-	go func() {
-		log.Println("LISTENING & SERVING ON PORT::" + strconv.Itoa(*port))
-		err := http.ListenAndServe(":"+strconv.Itoa(*port), nil)
-		if err != nil {
-			panic(err)
-		}
-	}()
-
-	return sdpChan //, userChan
-}
-
-// func ReallyFuckedUpShit(nigga string) {
-// 	http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// 		json.NewEncoder(w).Encode(nigga)
-// 	}
-// }
-
-func DecodeBase64(in string, obj interface{}) {
-	b, err := base64.StdEncoding.DecodeString(in)
-	if err != nil {
-		panic(err)
-	}
-	if compress {
-		b = unzip(b)
-	}
-	err = json.Unmarshal(b, obj)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func unzip(in []byte) []byte {
-	var b bytes.Buffer
-	_, err := b.Write(in)
-	if err != nil {
-		panic(err)
-	}
-	r, err := gzip.NewReader(&b)
-	if err != nil {
-		panic(err)
-	}
-	res, err := ioutil.ReadAll(r)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-func EncodeBase64(obj interface{}) string {
-	b, err := json.Marshal(obj)
-	if err != nil {
-		panic(err)
-	}
-	return base64.StdEncoding.EncodeToString(b)
+type ServerChConfig struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Topic string `json:"topic"`
 }
 
 func main() {
-	// r := chi.NewRouter()
+	port := ":8005"
+	router := chi.NewRouter()
 
-	// sdpChan := make(chan string)
-	// userChan := make(chan string)
+	router.Use(cors.Handler(cors.Options{
+		// AllowedOrigins: []string{"https://foo.com"}, // Use this to allow specific origin hosts
+		AllowedOrigins: []string{"*"},
+		// AllowOriginFunc:  func(r *http.Request, origin string) bool { return true },
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: false,
+		MaxAge:           300, // Maximum value not ignored by any of major browsers
+	}))
 
-	// r.Post("/api/sdp", func(w http.ResponseWriter, r *http.Request) {
-	// 	log.Println("foo")
-	// 	requestBody, err := ioutil.ReadAll(r.Body)
-	// 	if err != nil {
-	// 		log.Fatal("fuck")
-	// 	}
-	// 	defer r.Body.Close()
+	iw := InstanceWrapper{Servers: make(map[string]*web.WebInterface), ServersLock: new(sync.Mutex)}
 
-	// 	var itemRequest SdpStruct
-	// 	if err := json.Unmarshal(requestBody, &itemRequest); err != nil {
-	// 		log.Fatal("fuck")
-	// 	}
+	iw.ServersLock.Lock()
+	iw.ServersLock.Unlock()
 
-	// 	userChan <- string(itemRequest.User)
-	// 	sdpChan <- string(itemRequest.SDP)
+	router.Post("/api/liveset/{username}", func(w http.ResponseWriter, r *http.Request) {
+		newServerName := chi.URLParam(r, "username")
 
-	// 	log.Println("this won't be seen :(")
+		// requestBody, err := ioutil.ReadAll(r.Body)
+		// if err != nil {
+		// 	w.WriteHeader(400)
+		// 	return
+		// }
+		// defer r.Body.Close()
 
-	// })
+		// var serverConfigRequest ServerConfig
+		// if err := json.Unmarshal(requestBody, &serverConfigRequest); err != nil {
+		// 	w.WriteHeader(400)
+		// 	return
+		// }
 
-	// go func() {
-	// 	log.Println("LISTENING & SERVING ON PORT::8006")
-	// 	if err := http.ListenAndServe(":8006", r); err != nil {
-	// 		panic(err)
-	// 	}
-	// }()
-
-	sdpChan := HTTPSDPServer()
-
-	offer := webrtc.SessionDescription{}
-
-	DecodeBase64(<-sdpChan, &offer)
-	fmt.Println("line")
-
-	mediaEngine := webrtc.MediaEngine{}
-	err := mediaEngine.PopulateFromSDP(offer)
-	if err != nil {
-		panic(err)
-	}
-
-	api := webrtc.NewAPI(webrtc.WithMediaEngine((mediaEngine)))
-
-	peerConnectionConfig := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
+		/* serverConfigRequest := ServerConfig{
+			Webpath: newServerName,
+			Channels: []ServerChConfig{
+				ServerChConfig{
+					Name:  "name of audio channel",
+					Type:  "voice", //make voice & text auto generate
+					Topic: "audio channel"},
+				ServerChConfig{
+					Name:  "name of text channel",
+					Type:  "text", //make voice & text auto generate,
+					Topic: "text channel"},
 			},
-		},
-	}
+		} */
 
-	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
-	if err != nil {
-		panic(err)
-	}
+		if _, ok := iw.Servers[newServerName]; !ok {
+			go func() {
+				w := web.NewWebInterface(router, newServerName) // maybe configuration as an argument
+				iw.ServersLock.Lock()
+				defer iw.ServersLock.Unlock()
 
-	if _, err = peerConnection.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
-		panic(err)
-	}
+				iw.Servers[newServerName] = w //TODO: ability to remove from map
 
-	localTrackChan := make(chan *webrtc.Track)
-	peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
-		go func() {
-			ticker := time.NewTicker(rtcpPLIInterval)
-			for range ticker.C {
-				if rtcpSendErr := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: remoteTrack.SSRC()}}); rtcpSendErr != nil {
-					fmt.Println(rtcpSendErr)
-				}
-			}
-		}()
+				// t := agent.ChannelVoice
+				// w.AddChannel(t, "audio channel", "Voice-1")
+				// t = agent.ChannelText
+				// w.AddChannel(t, "text channel", "Text-1")
 
-		localTrack, newTrackErr := peerConnection.NewTrack(remoteTrack.PayloadType(), remoteTrack.SSRC(), "audio", "pion")
-		if newTrackErr != nil {
-			panic(newTrackErr)
+				log.Printf("Server of the name %s is running . . .\n", newServerName)
+
+				_ = w
+
+				// I don't know, maybe select is needed try to figure it out
+				//select {}
+
+				// for ch := range serverConfigRequest.Channels {
+				// 	t := agent.ChannelText
+				// 	if ch.Type != "" && strings.ToLower(ch.Type)[0] == 'v' {
+				// 		t = agent.ChannelVoice
+				// 	}
+
+				// 	w.AddChannel(t, ch.Name, ch.Topic)
+				// }
+			}()
+		} else {
+			log.Printf("Server of the name %s already exists.", newServerName)
+			w.WriteHeader(409)
+			return
 		}
-		localTrackChan <- localTrack
-
-		rtpBuf := make([]byte, 1400)
-		for {
-			i, readErr := remoteTrack.Read(rtpBuf)
-			if readErr != nil {
-				panic(readErr)
-			}
-			if _, err = localTrack.Write(rtpBuf[:i]); err != nil && err != io.ErrClosedPipe {
-				panic(err)
-			}
-		}
+		w.WriteHeader(201)
 	})
 
-	err = peerConnection.SetRemoteDescription(offer)
-	if err != nil {
-		panic(err)
-	}
+	log.Println("LISTENING AND SERVING", port)
+	log.Fatal(http.ListenAndServe(port, router))
 
-	answer, err := peerConnection.CreateAnswer(nil)
-	if err != nil {
-		panic(err)
-	}
-
-	err = peerConnection.SetLocalDescription(answer)
-	if err != nil {
-		panic(err)
-	}
-
-	//fmt.Println(EncodeBase64(answer))
-
-	//Broadcast sender
-
-	//encodedans := EncodeBase64(answer)
-
-	Save(EncodeBase64(answer))
-
-	localTrack := <-localTrackChan
-	for {
-		fmt.Println("line")
-		fmt.Println("Curl an base64 SDP to start sendonly peer connection")
-
-		recvOnlyOffer := webrtc.SessionDescription{}
-		DecodeBase64(<-sdpChan, &recvOnlyOffer)
-
-		peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
-		if err != nil {
-			panic(err)
-		}
-
-		_, err = peerConnection.AddTrack(localTrack)
-		if err != nil {
-			panic(err)
-		}
-
-		err = peerConnection.SetRemoteDescription(recvOnlyOffer)
-		if err != nil {
-			panic(err)
-		}
-
-		answer, err := peerConnection.CreateAnswer(nil)
-		if err != nil {
-			panic(err)
-		}
-
-		err = peerConnection.SetLocalDescription(answer)
-		if err != nil {
-			panic(err)
-		}
-
-		Save(EncodeBase64(answer))
-	}
 }

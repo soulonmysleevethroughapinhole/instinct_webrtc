@@ -156,8 +156,36 @@ func (t *DTLSTransport) startSRTP() error {
 		Profile:       srtp.ProtectionProfileAes128CmHmacSha1_80,
 		LoggerFactory: t.api.settingEngine.LoggerFactory,
 	}
+	if t.api.settingEngine.replayProtection.SRTP != nil {
+		srtpConfig.RemoteOptions = append(
+			srtpConfig.RemoteOptions,
+			srtp.SRTPReplayProtection(*t.api.settingEngine.replayProtection.SRTP),
+		)
+	}
 
-	err := srtpConfig.ExtractSessionKeysFromDTLS(t.conn, t.role() == DTLSRoleClient)
+	if t.api.settingEngine.disableSRTPReplayProtection {
+		srtpConfig.RemoteOptions = append(
+			srtpConfig.RemoteOptions,
+			srtp.SRTPNoReplayProtection(),
+		)
+	}
+
+	if t.api.settingEngine.replayProtection.SRTCP != nil {
+		srtpConfig.RemoteOptions = append(
+			srtpConfig.RemoteOptions,
+			srtp.SRTCPReplayProtection(*t.api.settingEngine.replayProtection.SRTCP),
+		)
+	}
+
+	if t.api.settingEngine.disableSRTCPReplayProtection {
+		srtpConfig.RemoteOptions = append(
+			srtpConfig.RemoteOptions,
+			srtp.SRTCPNoReplayProtection(),
+		)
+	}
+
+	connState := t.conn.ConnectionState()
+	err := srtpConfig.ExtractSessionKeysFromDTLS(&connState, t.role() == DTLSRoleClient)
 	if err != nil {
 		return fmt.Errorf("failed to extract sctp session keys: %v", err)
 	}
@@ -251,7 +279,6 @@ func (t *DTLSTransport) Start(remoteParameters DTLSParameters) error {
 		t.srtcpEndpoint = t.iceTransport.NewEndpoint(mux.MatchSRTCP)
 		t.remoteParameters = remoteParameters
 
-		// pion/webrtc#753
 		cert := t.certificates[0]
 		t.onStateChange(DTLSTransportStateConnecting)
 
@@ -273,6 +300,10 @@ func (t *DTLSTransport) Start(remoteParameters DTLSParameters) error {
 	role, dtlsConfig, err := prepareTransport()
 	if err != nil {
 		return err
+	}
+
+	if t.api.settingEngine.replayProtection.DTLS != nil {
+		dtlsConfig.ReplayProtectionWindow = int(*t.api.settingEngine.replayProtection.DTLS)
 	}
 
 	// Connect as DTLS Client/Server, function is blocking and we
@@ -300,7 +331,7 @@ func (t *DTLSTransport) Start(remoteParameters DTLSParameters) error {
 	}
 
 	// Check the fingerprint if a certificate was exchanged
-	remoteCerts := t.conn.RemoteCertificate()
+	remoteCerts := t.conn.ConnectionState().PeerCertificates
 	if len(remoteCerts) == 0 {
 		t.onStateChange(DTLSTransportStateFailed)
 		return fmt.Errorf("peer didn't provide certificate via DTLS")

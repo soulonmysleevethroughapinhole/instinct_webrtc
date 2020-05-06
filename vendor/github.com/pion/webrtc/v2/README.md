@@ -144,6 +144,18 @@ Check out the **[contributing wiki](https://github.com/pion/webrtc/wiki/Contribu
 * [Quentin Renard](https://github.com/asticode)
 * [opennota](https://github.com/opennota)
 * [Simon Eisenmann](https://github.com/longsleep)
+* [Ben Weitzman](https://github.com/benweitzman)
+* [Masahiro Nakamura](https://github.com/tsuu32)
+* [Tarrence van As](https://github.com/tarrencev)
+* [Yuki Igarashi](https://github.com/bonprosoft)
+* [Egon Elbre](https://github.com/egonelbre)
+* [Jerko Steiner](https://github.com/jeremija)
+* [Roman Romanenko](https://github.com/r-novel)
+* [YongXin SHI](https://github.com/a-wing)
+* [Magnus Wahlstrand](https://github.com/kyeett)
+* [Chad Retz](https://github.com/cretz)
+* [Simone Gotti](https://github.com/sgotti)
+* [Cedric Fung](https://github.com/cedricfung)
 
 ### License
 MIT License - see [LICENSE](LICENSE) for full text
