@@ -43,6 +43,7 @@ var (
 	incomingClients = make(chan *agent.Client, 10)
 	sdpChan         = make(chan string)
 	answerChan      = make(chan []byte)
+	numOfPeers      = 0
 )
 
 var upgrader = websocket.Upgrader{
@@ -60,6 +61,10 @@ type WebInterface struct {
 
 	Channels     map[int]*agent.Channel
 	ChannelsLock *sync.Mutex
+
+	Description string
+	Image       string
+	Artist      string
 }
 
 func NewWebInterface(router *chi.Mux, path string) *WebInterface {
@@ -72,22 +77,31 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 	//go w.handleExpireTransmit()
 
 	regPath := "/api/sdp/" + path
+	wsPath := "/api/" + path
 
 	log.Println(regPath)
+	log.Println(wsPath)
 
 	//router.HandleFunc(path, w.webSocketHandler)
+
+	//getting the sdp is stateless, people can keep the connection even if they are not in the chit chat room
 	router.Post(regPath, func(w http.ResponseWriter, r *http.Request) {
-		log.Println("ENDPOINT HIT")
+		//auth here
+		//have counter for number of users
+		//allow only publisher to be first
+
+		//if numOfPeers == 0 {
+		//auth(token)
+		//}
 
 		body, _ := ioutil.ReadAll(r.Body)
 		sdpChan <- string(body)
 
 		answer := <-answerChan
 		fmt.Fprint(w, string(answer))
-
 	})
-
-	log.Println(path)
+	//this is for the chat only, and managing connections
+	router.Get(wsPath, w.webSocketHandler)
 
 	go func() {
 		/* cracks knuckles */
@@ -103,11 +117,7 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 		//Decode?
 		//going to do something retarded and skip the above
 
-		log.Println("new init")
-
 		DecodeBase64(<-sdpChan, &offer)
-
-		log.Println("blocks right there")
 
 		peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
 		if err != nil {
@@ -257,26 +267,89 @@ func (w *WebInterface) handleRead(c *agent.Client) {
 		log.Printf("%d -> %s %d", msg.S, msg.T, len(msg.M))
 
 		switch msg.T {
-		case 101:
+		case agent.MessagePing:
 			c.Out <- &agent.Message{T: agent.MessagePong, M: msg.M}
-		case 201:
-			//answer, err := w.MessageRequestSDP(c, msg.PC, msg.M)
-			// answer, err := w.MessageRequestSDP(msg.M)
-			// if err != nil {
-			// 	log.Println("Failed to answer call")
-			// 	log.Fatal(err)
-			// }
+		case agent.MessageChat:
+			log.Printf("<%s> %s", c.Name, msg.M)
+			//Find a way to authenticate nicknames
+			//I think either
+			//A: auth at socket creation
+			//B: with every request
+			// not sure if the latter is necessary
+			// or if the first one is enough
+			// only one way to tell, ask god
 
-			//sdpChan <- msg.M
-			/*sdpChan <- string(msg.M)
+			w.ClientsLock.Lock()
+			for _, wc := range w.Clients {
+				wc.Out <- &agent.Message{S: c.ID, C: msg.C, N: c.Name, T: agent.MessageChat, M: msg.M}
+			}
+			w.ClientsLock.Unlock()
+		case agent.MessageConnect, agent.MessageDisconnect:
+			w.ClientsLock.Lock()
 
-			answer := <-answerChan
+			if msg.T == agent.MessageDisconnect {
+				w.quitChannel(c)
 
-			c.Out <- &agent.Message{T: agent.MessageAnswer, PC: msg.PC, M: answer}*/
+				c.Close()
+			}
+
+			msg.N = c.Name
+
+			for _, wc := range w.Clients {
+				wc.Out <- msg
+			}
+
+			w.ClientsLock.Unlock()
+
+			w.updateUserList()
+		default:
+			log.Printf("Unhandled message %d %s", msg.T, msg.M)
 		}
+
+		//case 201:
+		//answer, err := w.MessageRequestSDP(c, msg.PC, msg.M)
+		// answer, err := w.MessageRequestSDP(msg.M)
+		// if err != nil {
+		// 	log.Println("Failed to answer call")
+		// 	log.Fatal(err)
+		// }
+		//sdpChan <- msg.M
+		/*sdpChan <- string(msg.M)
+		answer := <-answerChan
+		c.Out <- &agent.Message{T: agent.MessageAnswer, PC: msg.PC, M: answer}*/
 		//case 202:
 		//MessageRequestSDP
 	}
+}
+
+func (w *WebInterface) createChannels() {
+	w.ChannelsLock.Lock()
+	defer w.ChannelsLock.Unlock()
+
+	// TODO Load channels from database
+}
+
+func (w *WebInterface) AddChannel(name string, topic string) {
+	w.ChannelsLock.Lock()
+	defer w.ChannelsLock.Unlock()
+
+	//ch := agent.NewChannel(w.nextChannelID(), t)
+	ch := agent.NewChannel(w.nextChannelID())
+	ch.Name = name
+	ch.Topic = topic
+
+	w.Channels[ch.ID] = ch
+}
+
+func (w *WebInterface) nextChannelID() int {
+	id := 0
+	for cid := range w.Channels {
+		if cid > id {
+			id = cid
+		}
+	}
+
+	return id + 1
 }
 
 /*yeah no idea anymore on what is happening*/
@@ -411,6 +484,63 @@ func (w *WebInterface) sendChannelList(c *agent.Client) {
 	c.Out <- &msg
 }
 
+func (w *WebInterface) updateUserList() {
+	w.ClientsLock.Lock()
+
+	msg := &agent.Message{T: agent.MessageUsers}
+
+	var userList agent.UserList
+	for _, wc := range w.Clients {
+		c := 0
+		if wc.Channel != nil {
+			c = wc.Channel.ID
+		}
+
+		userList = append(userList, &agent.User{ID: wc.ID, N: wc.Name, C: c})
+	}
+
+	sort.Sort(userList)
+
+	var err error
+	msg.M, err = json.Marshal(userList)
+	if err != nil {
+		log.Fatal("failed to marshal user list: ", err)
+	}
+
+	for _, wc := range w.Clients {
+		wc.Out <- msg
+	}
+
+	w.ClientsLock.Unlock()
+}
+
+func (w *WebInterface) quitChannel(c *agent.Client) {
+	if c.Channel == nil {
+		return
+	}
+
+	ch := c.Channel
+
+	w.ClientsLock.Lock()
+	ch.Lock()
+
+	for _, wc := range ch.Clients {
+		if len(wc.AudioOut.Tracks) == 0 && wc.ID != c.ID {
+			continue
+		}
+
+		wc.Out <- &agent.Message{T: agent.MessageQuit, N: c.Name, C: ch.ID}
+	}
+
+	delete(ch.Clients, c.ID)
+	c.Channel = nil
+
+	ch.Unlock()
+	w.ClientsLock.Unlock()
+
+	w.updateUserList()
+}
+
 func (w *WebInterface) webSocketHandler(wr http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(wr, r, nil)
 	if err != nil {
@@ -422,7 +552,7 @@ func (w *WebInterface) webSocketHandler(wr http.ResponseWriter, r *http.Request)
 
 	<-c.Terminated
 
-	//w.quitChannel(c)
+	w.quitChannel(c)
 
 	w.ClientsLock.Lock()
 	for id := range w.Clients {

@@ -23,8 +23,9 @@ type Channel struct {
 	*sync.Mutex
 }
 
-func NewChannel(id int, t ChannelType) *Channel {
-	c := Channel{ID: id, Type: t, Clients: make(map[int]*Client), Mutex: new(sync.Mutex)}
+func NewChannel(id int) *Channel {
+	//c := Channel{ID: id, Type: t, Clients: make(map[int]*Client), Mutex: new(sync.Mutex)}
+	c := Channel{ID: id, Type: 1, Clients: make(map[int]*Client), Mutex: new(sync.Mutex)}
 
 	return &c
 }

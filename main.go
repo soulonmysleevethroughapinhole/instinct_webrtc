@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"reflect"
 	"sync"
 
 	"github.com/go-chi/chi"
@@ -27,6 +30,12 @@ type ServerChConfig struct {
 	Topic string `json:"topic"`
 }
 
+type ServerInformation struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Image       string `json:"image"`
+}
+
 func main() {
 	port := ":8005"
 	router := chi.NewRouter()
@@ -47,8 +56,44 @@ func main() {
 	iw.ServersLock.Lock()
 	iw.ServersLock.Unlock()
 
-	router.Post("/api/liveset/{username}", func(w http.ResponseWriter, r *http.Request) {
+	//returns all livesets
+	router.Get("/api/livesets", func(w http.ResponseWriter, r *http.Request) {
+		keys := reflect.ValueOf(iw.Servers).MapKeys()
+		res := make([]ServerInformation, len(keys))
+
+		//strkeys := make([]string, len(keys))
+		for i := 0; i < len(keys); i++ {
+			res[i].Name = keys[i].String()
+			res[i].Description = iw.Servers[keys[i].String()].Description
+			//res[i].Image = iw.Servers[keys[i].String()].Image
+		}
+
+		RespondJson(w, http.StatusOK, res)
+	})
+	//returns one liveset
+	router.Get("/api/livesets/{username}", func(w http.ResponseWriter, r *http.Request) {
+		serverName := chi.URLParam(r, "username")
+
+		var res ServerInformation
+
+		if _, ok := iw.Servers[serverName]; ok {
+			res.Name = serverName
+			res.Description = iw.Servers[serverName].Description
+			//res.Image = iw.Servers[serverName].Image
+		} else {
+			w.WriteHeader(404)
+			return
+		}
+
+		RespondJson(w, http.StatusOK, res)
+	})
+	//creates a liveset
+	router.Post("/api/livesets/{username}", func(w http.ResponseWriter, r *http.Request) {
 		newServerName := chi.URLParam(r, "username")
+		body, _ := ioutil.ReadAll(r.Body)
+		newServerDescription := string(body)
+
+		var res ServerInformation
 
 		// requestBody, err := ioutil.ReadAll(r.Body)
 		// if err != nil {
@@ -83,14 +128,19 @@ func main() {
 				iw.ServersLock.Lock()
 				defer iw.ServersLock.Unlock()
 
+				w.AddChannel(newServerName, newServerDescription)
+				w.Description = newServerDescription
+
 				iw.Servers[newServerName] = w //TODO: ability to remove from map
 
 				// t := agent.ChannelVoice
 				// w.AddChannel(t, "audio channel", "Voice-1")
 				// t = agent.ChannelText
-				// w.AddChannel(t, "text channel", "Text-1")
 
 				log.Printf("Server of the name %s is running . . .\n", newServerName)
+
+				res.Name = newServerName
+				res.Description = iw.Servers[newServerName].Description
 
 				_ = w
 
@@ -111,10 +161,23 @@ func main() {
 			w.WriteHeader(409)
 			return
 		}
-		w.WriteHeader(201)
+		RespondJson(w, http.StatusCreated, res)
+	})
+	router.Delete("/api/livesets/{username}", func(w http.ResponseWriter, r *http.Request) {
+		serverName := chi.URLParam(r, "username")
+		//auth here
+
+		delete(iw.Servers, serverName)
+		w.WriteHeader(http.StatusOK)
 	})
 
 	log.Println("LISTENING AND SERVING", port)
 	log.Fatal(http.ListenAndServe(port, router))
 
+}
+
+func RespondJson(w http.ResponseWriter, statusCode int, body interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(body)
 }
