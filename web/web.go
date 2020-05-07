@@ -18,6 +18,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v2"
+	"github.com/pion/webrtc/v2/pkg/media"
+	"github.com/pion/webrtc/v2/pkg/media/oggwriter"
 	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/agent"
 )
 
@@ -36,6 +38,24 @@ var peerConnectionConfig = webrtc.Configuration{
 			URLs: []string{"stun:stun.l.google.com:19302"},
 		},
 	},
+}
+
+func saveToDisk(i media.Writer, track *webrtc.Track) {
+	defer func() {
+		if err := i.Close(); err != nil {
+			panic(err)
+		}
+	}()
+
+	for {
+		rtpPacket, err := track.ReadRTP()
+		if err != nil {
+			panic(err)
+		}
+		if err := i.WriteRTP(rtpPacket); err != nil {
+			panic(err)
+		}
+	}
 }
 
 //not quite sure how this works, maybe change and see what happens
@@ -128,6 +148,11 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 			panic(err)
 		}
 
+		oggFile, err := oggwriter.New("output.ogg", 48000, 2)
+		if err != nil {
+			panic(err)
+		}
+
 		localTrackChan := make(chan *webrtc.Track)
 		peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
 			go func() {
@@ -144,6 +169,18 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 				panic(newTrackErr)
 			}
 			localTrackChan <- localTrack
+
+			/* duct tape and bandaids solution */
+			//if peerconnnum == 0 { you know the drill, else skip this stuff
+			//I think I'll need to go routine here, so yeh
+			/* TESTING SAVING */
+			codec := remoteTrack.Codec()
+			if codec.Name == webrtc.Opus {
+				fmt.Println("Got Opus track, saving to disk as output.opus (48 kHz, 2 channels)")
+				saveToDisk(oggFile, remoteTrack)
+			}
+
+			/* This should only be seen for the sendonly connection */
 
 			rtpBuf := make([]byte, 1400)
 			for {
