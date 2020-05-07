@@ -167,6 +167,15 @@ func main() {
 		serverName := chi.URLParam(r, "username")
 		//auth here
 
+		//I will set a boolean value in iw[serverName]
+		//then fiddle with the chans a bit
+		//making sure recording has ended
+		//then delete
+
+		if iw.Servers[serverName].isMediaFinished == true {
+
+		}
+
 		delete(iw.Servers, serverName)
 		w.WriteHeader(http.StatusOK)
 	})

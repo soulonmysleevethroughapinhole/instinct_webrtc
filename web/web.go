@@ -64,6 +64,7 @@ var (
 	sdpChan         = make(chan string)
 	answerChan      = make(chan []byte)
 	numOfPeers      = 0
+	isSetToDelete   = false
 )
 
 var upgrader = websocket.Upgrader{
@@ -82,13 +83,22 @@ type WebInterface struct {
 	Channels     map[int]*agent.Channel
 	ChannelsLock *sync.Mutex
 
-	Description string
-	Image       string
-	Artist      string
+	isMediaFinished bool
+	Description     string
+	Image           string
+	Artist          string
 }
 
 func NewWebInterface(router *chi.Mux, path string) *WebInterface {
-	w := WebInterface{Clients: make(map[int]*agent.Client), ClientsLock: new(sync.Mutex), Channels: make(map[int]*agent.Channel), ChannelsLock: new(sync.Mutex)}
+	w := WebInterface{Clients: make(map[int]*agent.Client),
+		ClientsLock:     new(sync.Mutex),
+		Channels:        make(map[int]*agent.Channel),
+		ChannelsLock:    new(sync.Mutex),
+		isMediaFinished: false,
+		Description:     "Description not set",
+		Image:           "default.png",
+		Artist:          "username",
+	}
 
 	w.ChannelsLock.Lock()
 	defer w.ChannelsLock.Unlock()
@@ -118,6 +128,7 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 		sdpChan <- string(body)
 
 		answer := <-answerChan
+		numOfPeers++
 		fmt.Fprint(w, string(answer))
 	})
 	//this is for the chat only, and managing connections
@@ -164,6 +175,8 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 				}
 			}()
 
+			//check how many times this bad boy is called
+
 			localTrack, newTrackErr := peerConnection.NewTrack(remoteTrack.PayloadType(), remoteTrack.SSRC(), "audio", "pion")
 			if newTrackErr != nil {
 				panic(newTrackErr)
@@ -174,10 +187,15 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 			//if peerconnnum == 0 { you know the drill, else skip this stuff
 			//I think I'll need to go routine here, so yeh
 			/* TESTING SAVING */
-			codec := remoteTrack.Codec()
-			if codec.Name == webrtc.Opus {
-				fmt.Println("Got Opus track, saving to disk as output.opus (48 kHz, 2 channels)")
-				saveToDisk(oggFile, remoteTrack)
+
+			if numOfPeers == 0 {
+				codec := remoteTrack.Codec()
+				if codec.Name == webrtc.Opus {
+					fmt.Println("Got Opus track, saving to disk as output.opus (48 kHz, 2 channels)")
+					saveToDisk(oggFile, remoteTrack)
+				} else {
+					log.Println("Wrong codec, not recording")
+				}
 			}
 
 			/* This should only be seen for the sendonly connection */
@@ -224,11 +242,23 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 
 		localTrack := <-localTrackChan
 		for {
-
 			recvOnlyOffer := webrtc.SessionDescription{}
 			DecodeBase64(<-sdpChan, &recvOnlyOffer)
 
 			log.Println("big think")
+			// alright
+			// I think I will close the oggfile recording by checking bool here
+			//with every channel
+
+			if isSetToDelete == true {
+				closeErr := oggFile.Close()
+				if closeErr != nil {
+					panic(closeErr)
+				}
+				fmt.Println("Done writing media files")
+				w.isMediaFinished = true
+				//os.Exit(0)
+			}
 
 			peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
 			if err != nil {
@@ -289,6 +319,7 @@ func (w *WebInterface) handleIncomingClients() {
 		w.ClientsLock.Unlock()
 
 		//yeah I most likely need this
+		//no I don't think so
 		w.sendChannelList(c)
 
 		go w.handleRead(c)
@@ -342,20 +373,6 @@ func (w *WebInterface) handleRead(c *agent.Client) {
 		default:
 			log.Printf("Unhandled message %d %s", msg.T, msg.M)
 		}
-
-		//case 201:
-		//answer, err := w.MessageRequestSDP(c, msg.PC, msg.M)
-		// answer, err := w.MessageRequestSDP(msg.M)
-		// if err != nil {
-		// 	log.Println("Failed to answer call")
-		// 	log.Fatal(err)
-		// }
-		//sdpChan <- msg.M
-		/*sdpChan <- string(msg.M)
-		answer := <-answerChan
-		c.Out <- &agent.Message{T: agent.MessageAnswer, PC: msg.PC, M: answer}*/
-		//case 202:
-		//MessageRequestSDP
 	}
 }
 
@@ -391,102 +408,6 @@ func (w *WebInterface) nextChannelID() int {
 
 /*yeah no idea anymore on what is happening*/
 //func (w *WebInterface) MessageRequestSDP(offerSDP []byte) ([]byte, error) {
-func (w *WebInterface) MessageRequestSDP() {
-	// /* cracks knuckles */
-	// /* nothin personnel kid */
-
-	// m := webrtc.MediaEngine{}
-
-	// m.RegisterCodec(webrtc.NewRTPOpusCodec(webrtc.DefaultPayloadTypeOpus, 48000))
-	// api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
-
-	// offer := webrtc.SessionDescription{}
-	// //DecodeBase64(<-sdpChan, &offer) // I think this just puts the chan into the offer
-	// //Decode?
-	// //going to do something retarded and skip the above
-
-	// err := json.Unmarhal(<-sdpChan, &offer)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// if _, err := peerConnection.AddTransceiver(webrtc.RTPCodecTypeAudio); err != nil {
-	// 	panic(err)
-	// }
-
-	// localTrackChan := make(chan *webrtc.Track)
-	// peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
-	// 	go func() {
-	// 		ticker := time.NewTicker(rtcpPLIInterval)
-	// 		for range ticker.C {
-	// 			if rtcpSendErr := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: remoteTrack.SSRC()}}); rtcpSendErr != nil {
-	// 				fmt.Println(rtcpSendErr)
-	// 			}
-	// 		}
-	// 	}()
-
-	// 	localTrack, newTrackErr := peerConnection.NewTrack(remoteTrack.PayloadType(), remoteTrack.SSRC(), "audio", "pion")
-	// 	if newTrackErr != nil {
-	// 		panic(newTrackErr)
-	// 	}
-	// 	localTrackChan <- localTrack
-
-	// 	rtpBuf := make([]byte, 1400)
-	// 	for {
-	// 		i, readErr := remoteTrack.Read(rtpBuf)
-	// 		if readErr != nil {
-	// 			panic(readErr)
-	// 		}
-
-	// 		// ErrClosedPipe means we don't have any subscribers, this is ok if no peers have connected yet
-	// 		if _, err = localTrack.Write(rtpBuf[:i]); err != nil && err != io.ErrClosedPipe {
-	// 			panic(err)
-	// 		}
-	// 	}
-	// })
-
-	// err = peerConnection.SetRemoteDescription(offer)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// answer, err := peerConnection.CreateAnswer(nil)
-	// if err != {
-	// 	panic(err)
-	// }
-
-	// err = peerConnection.SetLocalDescription(answer)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// //alright
-	// //so the plan is to send the response to a channel which allows it to
-	// //to be sent through websockets
-
-	// //EncodeBase64(answer) ?
-
-	// answerChan <-answer
-
-	// //answerchan should receive the new the answer
-	// //until then answerchan should block
-
-	// localTrack := <- localTrackChan
-	// for {
-
-	// }
-}
-
-// func (w *WebInterface) MessageRequestSDPSubscriber(offerSPD []byte) ([]byte, error) {
-// 	//nobody knows what localtrackchan does or what it is,
-// 	//you are going to have to take a chance
-// 	//there may be scoping issues in here
-// }
 
 func (w *WebInterface) nextClientID() int {
 	id := 1
