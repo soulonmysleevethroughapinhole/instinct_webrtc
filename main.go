@@ -34,6 +34,7 @@ type ServerInformation struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Image       string `json:"image"`
+	NumOfPeers  int    `json:peers`
 }
 
 func main() {
@@ -79,6 +80,7 @@ func main() {
 		if _, ok := iw.Servers[serverName]; ok {
 			res.Name = serverName
 			res.Description = iw.Servers[serverName].Description
+			res.NumOfPeers = iw.Servers[serverName].NumOfPeers
 			//res.Image = iw.Servers[serverName].Image
 		} else {
 			w.WriteHeader(404)
@@ -122,16 +124,18 @@ func main() {
 			},
 		} */
 
+		okChan := make(chan bool)
+
 		if _, ok := iw.Servers[newServerName]; !ok {
 			go func() {
-				w := web.NewWebInterface(router, newServerName) // maybe configuration as an argument
+				iw.Servers[newServerName] = web.NewWebInterface(router, newServerName) // maybe configuration as an argument
 				iw.ServersLock.Lock()
 				defer iw.ServersLock.Unlock()
 
-				w.AddChannel(newServerName, newServerDescription)
-				w.Description = newServerDescription
+				iw.Servers[newServerName].AddChannel(newServerName, newServerDescription)
+				iw.Servers[newServerName].Description = newServerDescription
 
-				iw.Servers[newServerName] = w //TODO: ability to remove from map
+				//iw.Servers[newServerName] = w //TODO: ability to remove from map
 
 				// t := agent.ChannelVoice
 				// w.AddChannel(t, "audio channel", "Voice-1")
@@ -142,7 +146,9 @@ func main() {
 				res.Name = newServerName
 				res.Description = iw.Servers[newServerName].Description
 
-				_ = w
+				okChan <- true
+
+				_ = iw.Servers[newServerName]
 
 				// I don't know, maybe select is needed try to figure it out
 				//select {}
@@ -161,6 +167,7 @@ func main() {
 			w.WriteHeader(409)
 			return
 		}
+		<-okChan
 		RespondJson(w, http.StatusCreated, res)
 	})
 	router.Delete("/api/livesets/{username}", func(w http.ResponseWriter, r *http.Request) {
@@ -172,11 +179,12 @@ func main() {
 		//making sure recording has ended
 		//then delete
 
-		if iw.Servers[serverName].isMediaFinished == true {
+		iw.Servers[serverName].SetToDelete = true
 
+		if iw.Servers[serverName].MediaWriting == false {
+			delete(iw.Servers, serverName)
 		}
 
-		delete(iw.Servers, serverName)
 		w.WriteHeader(http.StatusOK)
 	})
 

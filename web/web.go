@@ -19,7 +19,6 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v2"
 	"github.com/pion/webrtc/v2/pkg/media"
-	"github.com/pion/webrtc/v2/pkg/media/oggwriter"
 	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/agent"
 )
 
@@ -63,8 +62,6 @@ var (
 	incomingClients = make(chan *agent.Client, 10)
 	sdpChan         = make(chan string)
 	answerChan      = make(chan []byte)
-	numOfPeers      = 0
-	isSetToDelete   = false
 )
 
 var upgrader = websocket.Upgrader{
@@ -83,21 +80,25 @@ type WebInterface struct {
 	Channels     map[int]*agent.Channel
 	ChannelsLock *sync.Mutex
 
-	isMediaFinished bool
-	Description     string
-	Image           string
-	Artist          string
+	Description  string
+	Image        string
+	Artist       string
+	NumOfPeers   int
+	SetToDelete  bool
+	MediaWriting bool
 }
 
 func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 	w := WebInterface{Clients: make(map[int]*agent.Client),
-		ClientsLock:     new(sync.Mutex),
-		Channels:        make(map[int]*agent.Channel),
-		ChannelsLock:    new(sync.Mutex),
-		isMediaFinished: false,
-		Description:     "Description not set",
-		Image:           "default.png",
-		Artist:          "username",
+		ClientsLock:  new(sync.Mutex),
+		Channels:     make(map[int]*agent.Channel),
+		ChannelsLock: new(sync.Mutex),
+		Description:  "Description not set",
+		Image:        "default.png",
+		Artist:       "username",
+		NumOfPeers:   0,
+		SetToDelete:  false,
+		MediaWriting: true,
 	}
 
 	w.ChannelsLock.Lock()
@@ -115,7 +116,7 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 	//router.HandleFunc(path, w.webSocketHandler)
 
 	//getting the sdp is stateless, people can keep the connection even if they are not in the chit chat room
-	router.Post(regPath, func(w http.ResponseWriter, r *http.Request) {
+	router.Post(regPath, func(wr http.ResponseWriter, r *http.Request) {
 		//auth here
 		//have counter for number of users
 		//allow only publisher to be first
@@ -124,12 +125,15 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 		//auth(token)
 		//}
 
+		log.Println(regPath)
+
 		body, _ := ioutil.ReadAll(r.Body)
 		sdpChan <- string(body)
 
+		log.Println(w.NumOfPeers)
+
 		answer := <-answerChan
-		numOfPeers++
-		fmt.Fprint(w, string(answer))
+		fmt.Fprint(wr, string(answer))
 	})
 	//this is for the chat only, and managing connections
 	router.Get(wsPath, w.webSocketHandler)
@@ -159,10 +163,10 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 			panic(err)
 		}
 
-		oggFile, err := oggwriter.New("output.ogg", 48000, 2)
-		if err != nil {
-			panic(err)
-		}
+		// oggFile, err := oggwriter.New("output.ogg", 48000, 2)
+		// if err != nil {
+		// 	panic(err)
+		// }
 
 		localTrackChan := make(chan *webrtc.Track)
 		peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
@@ -188,15 +192,16 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 			//I think I'll need to go routine here, so yeh
 			/* TESTING SAVING */
 
-			if numOfPeers == 0 {
-				codec := remoteTrack.Codec()
-				if codec.Name == webrtc.Opus {
-					fmt.Println("Got Opus track, saving to disk as output.opus (48 kHz, 2 channels)")
-					saveToDisk(oggFile, remoteTrack)
-				} else {
-					log.Println("Wrong codec, not recording")
-				}
-			}
+			// if w.NumOfPeers == 0 {
+			// 	codec := remoteTrack.Codec()
+			// 	if codec.Name == webrtc.Opus {
+			// 		fmt.Println("Got Opus track, saving to disk as output.opus (48 kHz, 2 channels)")
+			// 		w.MediaWriting = true
+			// 		saveToDisk(oggFile, remoteTrack)
+			// 	} else {
+			// 		log.Println("Wrong codec, not recording")
+			// 	}
+			// }
 
 			/* This should only be seen for the sendonly connection */
 
@@ -242,6 +247,8 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 
 		localTrack := <-localTrackChan
 		for {
+			w.NumOfPeers++ //I THINK THIS SHOULD WORK ?!?!?!? CALLED EVERY TIME MAYBE?!?!?!
+
 			recvOnlyOffer := webrtc.SessionDescription{}
 			DecodeBase64(<-sdpChan, &recvOnlyOffer)
 
@@ -250,15 +257,15 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 			// I think I will close the oggfile recording by checking bool here
 			//with every channel
 
-			if isSetToDelete == true {
-				closeErr := oggFile.Close()
-				if closeErr != nil {
-					panic(closeErr)
-				}
-				fmt.Println("Done writing media files")
-				w.isMediaFinished = true
-				//os.Exit(0)
-			}
+			// if w.SetToDelete == true {
+			// 	closeErr := oggFile.Close()
+			// 	if closeErr != nil {
+			// 		panic(closeErr)
+			// 	}
+			// 	fmt.Println("Done writing media files")
+			// 	w.MediaWriting = false
+			// 	//os.Exit(0)
+			// }
 
 			peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
 			if err != nil {
