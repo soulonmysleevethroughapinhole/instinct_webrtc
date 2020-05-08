@@ -128,14 +128,14 @@ func main() {
 
 		if _, ok := iw.Servers[newServerName]; !ok {
 			go func() {
-				iw.Servers[newServerName] = web.NewWebInterface(router, newServerName) // maybe configuration as an argument
+				w := web.NewWebInterface(router, newServerName) // maybe configuration as an argument
 				iw.ServersLock.Lock()
 				defer iw.ServersLock.Unlock()
 
-				iw.Servers[newServerName].AddChannel(newServerName, newServerDescription)
-				iw.Servers[newServerName].Description = newServerDescription
+				w.AddChannel(newServerName, newServerDescription)
+				w.Description = newServerDescription
 
-				//iw.Servers[newServerName] = w //TODO: ability to remove from map
+				iw.Servers[newServerName] = w //TODO: ability to remove from map
 
 				// t := agent.ChannelVoice
 				// w.AddChannel(t, "audio channel", "Voice-1")
@@ -148,7 +148,7 @@ func main() {
 
 				okChan <- true
 
-				_ = iw.Servers[newServerName]
+				_ = w
 
 				// I don't know, maybe select is needed try to figure it out
 				//select {}

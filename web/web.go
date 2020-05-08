@@ -60,8 +60,6 @@ func saveToDisk(i media.Writer, track *webrtc.Track) {
 //not quite sure how this works, maybe change and see what happens
 var (
 	incomingClients = make(chan *agent.Client, 10)
-	sdpChan         = make(chan string)
-	answerChan      = make(chan []byte)
 )
 
 var upgrader = websocket.Upgrader{
@@ -104,16 +102,19 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 	w.ChannelsLock.Lock()
 	defer w.ChannelsLock.Unlock()
 
-	//go w.handleIncomingClients()
-	//go w.handleExpireTransmit()
+	var (
+		sdpChan    = make(chan string)
+		answerChan = make(chan []byte)
+	)
+
+	go w.handleIncomingClients()
+	go w.handleExpireTransmit()
 
 	regPath := "/api/sdp/" + path
 	wsPath := "/api/" + path
 
 	log.Println(regPath)
 	log.Println(wsPath)
-
-	//router.HandleFunc(path, w.webSocketHandler)
 
 	//getting the sdp is stateless, people can keep the connection even if they are not in the chit chat room
 	router.Post(regPath, func(wr http.ResponseWriter, r *http.Request) {
@@ -314,7 +315,7 @@ func (w *WebInterface) handleIncomingClients() {
 
 			c.Connected = true
 
-			//w.updateUserList()
+			w.updateUserList()
 
 			w.ClientsLock.Lock()
 			for _, wc := range w.Clients {
@@ -504,6 +505,23 @@ func (w *WebInterface) quitChannel(c *agent.Client) {
 	w.ClientsLock.Unlock()
 
 	w.updateUserList()
+}
+
+func (w *WebInterface) handleExpireTransmit() {
+	t := time.NewTicker(250 * time.Millisecond)
+	for range t.C {
+		w.ClientsLock.Lock()
+		for _, wc := range w.Clients {
+			if wc.AudioIn.ExpireTransmit() {
+				for _, wcc := range wc.Channel.Clients {
+					if len(wcc.AudioOut.Tracks) > 0 {
+						wcc.Out <- &agent.Message{T: agent.MessageTransmitStop, S: wc.ID}
+					}
+				}
+			}
+		}
+		w.ClientsLock.Unlock()
+	}
 }
 
 func (w *WebInterface) webSocketHandler(wr http.ResponseWriter, r *http.Request) {
