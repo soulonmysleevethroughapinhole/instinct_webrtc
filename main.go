@@ -94,38 +94,8 @@ func main() {
 		newServerName := chi.URLParam(r, "username")
 		body, _ := ioutil.ReadAll(r.Body)
 		newServerDescription := string(body)
-
 		var res ServerInformation
-
-		// requestBody, err := ioutil.ReadAll(r.Body)
-		// if err != nil {
-		// 	w.WriteHeader(400)
-		// 	return
-		// }
-		// defer r.Body.Close()
-
-		// var serverConfigRequest ServerConfig
-		// if err := json.Unmarshal(requestBody, &serverConfigRequest); err != nil {
-		// 	w.WriteHeader(400)
-		// 	return
-		// }
-
-		/* serverConfigRequest := ServerConfig{
-			Webpath: newServerName,
-			Channels: []ServerChConfig{
-				ServerChConfig{
-					Name:  "name of audio channel",
-					Type:  "voice", //make voice & text auto generate
-					Topic: "audio channel"},
-				ServerChConfig{
-					Name:  "name of text channel",
-					Type:  "text", //make voice & text auto generate,
-					Topic: "text channel"},
-			},
-		} */
-
 		okChan := make(chan bool)
-
 		if _, ok := iw.Servers[newServerName]; !ok {
 			go func() {
 				w := web.NewWebInterface(router, newServerName) // maybe configuration as an argument
@@ -149,18 +119,7 @@ func main() {
 				okChan <- true
 
 				_ = w
-
-				// I don't know, maybe select is needed try to figure it out
 				//select {}
-
-				// for ch := range serverConfigRequest.Channels {
-				// 	t := agent.ChannelText
-				// 	if ch.Type != "" && strings.ToLower(ch.Type)[0] == 'v' {
-				// 		t = agent.ChannelVoice
-				// 	}
-
-				// 	w.AddChannel(t, ch.Name, ch.Topic)
-				// }
 			}()
 		} else {
 			log.Printf("Server of the name %s already exists.", newServerName)

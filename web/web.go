@@ -20,6 +20,10 @@ import (
 	"github.com/pion/webrtc/v2"
 	"github.com/pion/webrtc/v2/pkg/media"
 	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/agent"
+	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/utils/auth_utils"
+	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/utils/http_utils"
+	"github.com/soulonmysleevethroughapinhole/instinct_webrtc/utils/rest_errors"
+	"gitlab.com/golang-commonmark/markdown"
 )
 
 //
@@ -61,6 +65,8 @@ func saveToDisk(i media.Writer, track *webrtc.Track) {
 var (
 	incomingClients = make(chan *agent.Client, 10)
 )
+
+var markdownRenderer = markdown.New(markdown.Typographer(false), markdown.Breaks(true), markdown.Quotes([]string{`"`, `"`, `'`, `'`}))
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -126,6 +132,17 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 		//auth(token)
 		//}
 
+		username, authErr := auth_utils.Authenticate(r.Header.Get("Authorization"))
+		if authErr != nil {
+			respErr := rest_errors.NewBadRequestError("auth failed")
+			http_utils.RespondError(wr, respErr)
+			return
+		}
+
+		log.Println(username)
+
+		//if path == username --> allow new track or whatever
+
 		log.Println(regPath)
 
 		body, _ := ioutil.ReadAll(r.Body)
@@ -137,7 +154,48 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 		fmt.Fprint(wr, string(answer))
 	})
 	//this is for the chat only, and managing connections
-	router.Get(wsPath, w.webSocketHandler)
+	//router.Get(wsPath, w.webSocketHandler)
+
+	router.Get(wsPath, func(wr http.ResponseWriter, r *http.Request) {
+		// username, authErr := auth_utils.Authenticate(r.Header.Get("access_token"))
+		// if authErr != nil {
+		// 	log.Println("error authenticating")
+		// 	log.Println(r.Header.Get("access_token"))
+		// 	respErr := rest_errors.NewBadRequestError("auth failed")
+		// 	http_utils.RespondError(wr, respErr)
+		// 	return
+		// }
+
+		username := "auth_testing"
+
+		conn, err := upgrader.Upgrade(wr, r, nil)
+		if err != nil {
+			return
+		}
+
+		c := agent.NewClient(conn, username)
+		incomingClients <- c
+
+		<-c.Terminated
+
+		w.quitChannel(c)
+
+		w.ClientsLock.Lock()
+		for id := range w.Clients {
+			if w.Clients[id].Status != -1 {
+				continue
+			}
+
+			name := w.Clients[id].Name
+			//name := username
+			delete(w.Clients, id)
+
+			for _, wc := range w.Clients {
+				wc.Out <- &agent.Message{T: agent.MessageDisconnect, N: name, M: []byte(name)}
+			}
+		}
+		w.ClientsLock.Unlock()
+	})
 
 	go func() {
 		/* cracks knuckles */
@@ -174,6 +232,7 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 			go func() {
 				ticker := time.NewTicker(rtcpPLIInterval)
 				for range ticker.C {
+					log.Println("packet sent")
 					if rtcpSendErr := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: remoteTrack.SSRC()}}); rtcpSendErr != nil {
 						fmt.Println(rtcpSendErr)
 					}
@@ -301,6 +360,118 @@ func NewWebInterface(router *chi.Mux, path string) *WebInterface {
 	return &w
 }
 
+var (
+	m              webrtc.MediaEngine
+	api            *webrtc.API
+	offer          webrtc.SessionDescription
+	localTrackChan = make(chan *webrtc.Track)
+	peerConnection *webrtc.PeerConnection
+)
+
+//move into go func pinned to top?
+func (w *WebInterface) answerRTCInit() {
+	m = webrtc.MediaEngine{}
+
+	m.RegisterCodec(webrtc.NewRTPOpusCodec(webrtc.DefaultPayloadTypeOpus, 48000))
+	api = webrtc.NewAPI(webrtc.WithMediaEngine(m))
+	offer = webrtc.SessionDescription{}
+
+	peerConnection.OnTrack(func(remoteTrack *webrtc.Track, receiver *webrtc.RTPReceiver) {
+		go func() {
+			ticker := time.NewTicker(rtcpPLIInterval)
+			for range ticker.C {
+				log.Println("packet sent")
+				if rtcpSendErr := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: remoteTrack.SSRC()}}); rtcpSendErr != nil {
+					fmt.Println(rtcpSendErr)
+				}
+			}
+		}()
+
+		localTrack, newTrackErr := peerConnection.NewTrack(remoteTrack.PayloadType(), remoteTrack.SSRC(), "audio", "pion")
+		if newTrackErr != nil {
+			panic(newTrackErr)
+		}
+		localTrackChan <- localTrack
+
+		rtpBuf := make([]byte, 1400)
+		for {
+			i, readErr := remoteTrack.Read(rtpBuf)
+			if readErr != nil {
+				panic(readErr)
+			}
+			// ErrClosedPipe means we don't have any subscribers, this is ok if no peers have connected yet
+			var err error
+			if _, err = localTrack.Write(rtpBuf[:i]); err != nil && err != io.ErrClosedPipe {
+				panic(err)
+			}
+		}
+	})
+}
+
+func (w *WebInterface) answerRTCApproved(reqSDP string) []byte {
+	//DecodeBase64(<-sdpChan, &offer)
+	DecodeBase64(reqSDP, &offer)
+
+	var err error //fuck
+	peerConnection, err = api.NewPeerConnection(peerConnectionConfig)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := peerConnection.AddTransceiver(webrtc.RTPCodecTypeAudio); err != nil {
+		panic(err)
+	}
+
+	err := peerConnection.SetRemoteDescription(offer)
+	if err != nil {
+		panic(err)
+	}
+
+	answer, err := peerConnection.CreateAnswer(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	err = peerConnection.SetLocalDescription(answer)
+	if err != nil {
+		panic(err)
+	}
+
+	return []byte(EncodeBase64(answer))
+}
+
+func (w *WebInterface) answerRTCDefault(reqSDP string) []byte {
+	DecodeBase64(reqSDP, &offer)
+
+	recvOnlyOffer := webrtc.SessionDescription{}
+
+	peerConnection, err := api.NewPeerConnection(peerConnectionConfig)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = peerConnection.AddTrack(localTrack)
+	if err != nil {
+		panic(err)
+	}
+
+	err = peerConnection.SetRemoteDescription(recvOnlyOffer)
+	if err != nil {
+		panic(err)
+	}
+
+	answer, err := peerConnection.CreateAnswer(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	err = peerConnection.SetLocalDescription(answer)
+	if err != nil {
+		panic(err)
+	}
+
+	return []byte(EncodeBase64(answer))
+}
+
 func (w *WebInterface) handleIncomingClients() {
 	for c := range incomingClients {
 		c := c
@@ -340,20 +511,27 @@ func (w *WebInterface) handleRead(c *agent.Client) {
 			return
 		}
 
-		log.Printf("%d -> %s %d", msg.S, msg.T, len(msg.M))
+		//log.Printf("%d -> %s %d", msg.S, msg.T, len(msg.M))
 
 		switch msg.T {
 		case agent.MessagePing:
 			c.Out <- &agent.Message{T: agent.MessagePong, M: msg.M}
 		case agent.MessageChat:
+			// if bytes.HasPrefix(bytes.ToLower(msg.M), []byte("/nick ")) {
+			// 	go func(mm []byte) {
+			// 		c.In <- &agent.Message{S: c.ID, T: agent.MessageNick, M: mm}
+			// 	}(msg.M[6:])
+
+			// 	continue
+			// }
+
 			log.Printf("<%s> %s", c.Name, msg.M)
-			//Find a way to authenticate nicknames
-			//I think either
-			//A: auth at socket creation
-			//B: with every request
-			// not sure if the latter is necessary
-			// or if the first one is enough
-			// only one way to tell, ask god
+			// msg.M = bytes.TrimSpace([]byte(markdownRenderer.RenderToString(msg.M)))
+			log.Println(msg.M)
+			// if bytes.Count(msg.M, []byte("<p>")) == 1 && bytes.Count(msg.M, []byte("</p>")) == 1 && bytes.HasPrefix(msg.M, []byte("<p>")) && bytes.HasSuffix(msg.M, []byte("</p>")) {
+			// 	msg.M = msg.M[3 : len(msg.M)-4]
+			// }
+			//msg.M = bytes.TrimSpace(bytes.ReplaceAll(msg.M, []byte(`<a href="`), []byte(`<a target="_blank" href="`)))
 
 			w.ClientsLock.Lock()
 			for _, wc := range w.Clients {
@@ -525,12 +703,23 @@ func (w *WebInterface) handleExpireTransmit() {
 }
 
 func (w *WebInterface) webSocketHandler(wr http.ResponseWriter, r *http.Request) {
+	// username, authErr := auth_utils.Authenticate(r.Header.Get("Authorization"))
+	// if authErr != nil {
+	// 	log.Println("error authenticating")
+	// 	log.Println(r.Header.Get("Authorization"))
+	// 	respErr := rest_errors.NewBadRequestError("auth failed")
+	// 	http_utils.RespondError(wr, respErr)
+	// 	return
+	// }
+
+	username := "auth_testing"
+
 	conn, err := upgrader.Upgrade(wr, r, nil)
 	if err != nil {
 		return
 	}
 
-	c := agent.NewClient(conn)
+	c := agent.NewClient(conn, username)
 	incomingClients <- c
 
 	<-c.Terminated
@@ -544,6 +733,7 @@ func (w *WebInterface) webSocketHandler(wr http.ResponseWriter, r *http.Request)
 		}
 
 		name := w.Clients[id].Name
+		//name := username
 		delete(w.Clients, id)
 
 		for _, wc := range w.Clients {

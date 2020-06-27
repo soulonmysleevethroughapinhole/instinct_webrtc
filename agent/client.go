@@ -32,10 +32,11 @@ type Client struct {
 	Terminated chan bool
 }
 
-func NewClient(conn *websocket.Conn) *Client {
+func NewClient(conn *websocket.Conn, UN string) *Client {
 	c := Client{
+		//Name:         "Anonymous",
 		Conn:         conn,
-		Name:         "Anonymous",
+		Name:         UN,
 		PeerConns:    make(map[int]*webrtc.PeerConnection),
 		PeerConnLock: new(sync.Mutex),
 		In:           make(chan *Message, 10),
